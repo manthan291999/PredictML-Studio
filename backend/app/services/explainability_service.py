@@ -15,20 +15,22 @@ class ExplainabilityService:
         Extracts the estimator from the pipeline and initializes the correct SHAP explainer.
         """
         model = pipeline.named_steps['classifier_or_regressor']
-        
-        # Check if it's a tree model (RandomForest, XGB, LGBM, CatBoost usually have 'estimators_' or specific class names)
-        # TreeExplainer is extremely fast for these.
         model_name = type(model).__name__.lower()
         
-        if 'forest' in model_name or 'xgb' in model_name or 'lgbm' in model_name or 'catboost' in model_name:
-            explainer = shap.TreeExplainer(model)
-        else:
-            # Fallback to KernelExplainer for Linear/Logistic modes etc.
-            # Sample background strictly to keep it fast
-            background_sample = X_background.sample(n=min(100, len(X_background)), random_state=42)
-            explainer = shap.KernelExplainer(model.predict, background_sample)
-            
-        return explainer
+        if any(term in model_name for term in ['forest', 'xgb', 'lgbm', 'catboost', 'tree', 'booster', 'gradientboosting', 'hist']):
+            try:
+                return shap.TreeExplainer(model)
+            except Exception:
+                pass
+        elif any(term in model_name for term in ['linear', 'logistic', 'ridge', 'lasso', 'elastic', 'sgd']):
+            try:
+                return shap.LinearExplainer(model, X_background)
+            except Exception:
+                pass
+                
+        # Fallback to KernelExplainer with compact sample size for rapid responsiveness
+        background_sample = X_background.sample(n=min(25, len(X_background)), random_state=42)
+        return shap.KernelExplainer(model.predict, background_sample)
 
     @staticmethod
     def get_global_shap(pipeline: Any, X_train: pd.DataFrame, max_display: int = 10) -> Dict[str, Any]:
@@ -47,15 +49,19 @@ class ExplainabilityService:
         
         X_trans_df = pd.DataFrame(X_transformed, columns=all_features)
         
-        # Speed optimization: sample 500 rows globally
-        X_sample = X_trans_df.sample(n=min(500, len(X_trans_df)), random_state=42)
+        # Speed optimization: sample 100 rows globally for interactive studio performance
+        X_sample = X_trans_df.sample(n=min(100, len(X_trans_df)), random_state=42)
         
         explainer = ExplainabilityService._get_explainer(pipeline, X_sample)
         shap_values = explainer.shap_values(X_sample)
         
-        # For classification, shap_values might be a list of arrays (one per class). We take class 1.
+        # For classification, shap_values might be a list of arrays or a 3D numpy array. We take class 1.
+        if hasattr(shap_values, "values") and not isinstance(shap_values, (pd.DataFrame, pd.Series)):
+            shap_values = shap_values.values
         if isinstance(shap_values, list):
-            shap_values = shap_values[1]
+            shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+        elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+            shap_values = shap_values[:, :, 1 if shap_values.shape[2] > 1 else 0]
             
         # Calculate mean absolute shap values for global feature importance
         mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
@@ -94,9 +100,17 @@ class ExplainabilityService:
         shap_values = explainer.shap_values(record_trans_df)
         expected_value = explainer.expected_value
         
+        if hasattr(shap_values, "values") and not isinstance(shap_values, (pd.DataFrame, pd.Series)):
+            shap_values = shap_values.values
+
         if isinstance(shap_values, list):
-            shap_values = shap_values[1][0]
-            expected_value = expected_value[1] if isinstance(expected_value, (list, np.ndarray)) else expected_value
+            idx = 1 if len(shap_values) > 1 else 0
+            shap_values = shap_values[idx][0]
+            expected_value = expected_value[idx] if isinstance(expected_value, (list, np.ndarray)) else expected_value
+        elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+            idx = 1 if shap_values.shape[2] > 1 else 0
+            shap_values = shap_values[0, :, idx]
+            expected_value = expected_value[idx] if isinstance(expected_value, (list, np.ndarray)) else expected_value
         else:
             shap_values = shap_values[0]
             expected_value = expected_value if not isinstance(expected_value, (list, np.ndarray)) else expected_value[0]

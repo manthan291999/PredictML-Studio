@@ -40,12 +40,13 @@ class EvaluationService:
                 'r2': float(r2_score(y_test, y_pred))
             }
             # Compute a sample of residuals for plotting
-            residuals = y_test - y_pred
+            residuals = np.array(y_test) - np.array(y_pred)
+            y_pred_arr = np.array(y_pred)
             # Limit to 100 points for efficient frontend charting
             sample_idx = np.random.choice(len(residuals), min(100, len(residuals)), replace=False)
             results['charts'] = {
                 'residual_plot': [
-                    {"predicted": float(y_pred.iloc[i]), "residual": float(residuals.iloc[i])} 
+                    {"predicted": float(y_pred_arr[i]), "residual": float(residuals[i])} 
                     for i in sample_idx
                 ]
             }
